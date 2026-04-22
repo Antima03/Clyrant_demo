@@ -25,7 +25,7 @@ def _validate_identifier(name: str) -> str:
 
 
 @router.get("/primary-kpi/net-sales")
-async def net_sales(
+def net_sales(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -212,7 +212,7 @@ async def net_sales(
 
 
 @router.get("/primary-kpi/sales-vs-target")
-async def sales_vs_target(
+def sales_vs_target(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -368,7 +368,7 @@ async def sales_vs_target(
 
 
 @router.get("/secondary-kpi/absolute-reach")
-async def absolute_reach(
+def absolute_reach(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -523,7 +523,7 @@ async def absolute_reach(
 
 
 @router.get("/secondary-kpi/primary-vs-secondary-gap")
-async def primary_vs_secondary_gap(
+def primary_vs_secondary_gap(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -654,7 +654,7 @@ async def primary_vs_secondary_gap(
 
 
 @router.get("/secondary-kpi/fill-rate")
-async def fill_rate(
+def fill_rate(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -791,7 +791,7 @@ async def fill_rate(
 
 
 @router.get("/tertiary-kpi/lines-per-call")
-async def lines_per_call(
+def lines_per_call(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -915,7 +915,7 @@ async def lines_per_call(
 
 
 @router.get("/tertiary-kpi/productivity")
-async def productivity(
+def productivity(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -1030,7 +1030,7 @@ async def productivity(
 
 
 @router.get("/primary-kpi/filter-options")
-async def filter_options():
+def filter_options():
     con = get_duckdb_connection()
     try:
         regions = [
@@ -1069,7 +1069,7 @@ async def filter_options():
 
 
 @router.get("/charts/primary-sales-by-product")
-async def primary_sales_by_product(
+def primary_sales_by_product(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -1209,7 +1209,7 @@ async def primary_sales_by_product(
 
 
 @router.get("/charts/primary-sales-drilldown")
-async def primary_sales_drilldown(
+def primary_sales_drilldown(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -1365,7 +1365,7 @@ async def primary_sales_drilldown(
 
 
 @router.get("/charts/outlet-funnel")
-async def outlet_funnel(
+def outlet_funnel(
     time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
@@ -1579,7 +1579,7 @@ async def outlet_funnel(
 
 
 @router.get("/charts/sec-vs-pri-ratio")
-async def sec_vs_pri_ratio(
+def sec_vs_pri_ratio(
     months: int = 4,
     as_of: Optional[date] = None,
     region: Optional[Literal["North", "South", "East", "West"]] = None,
