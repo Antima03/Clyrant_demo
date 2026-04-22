@@ -1068,5 +1068,645 @@ async def filter_options():
 
 
 
+@router.get("/charts/primary-sales-by-product")
+async def primary_sales_by_product(
+    time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
+    as_of: Optional[date] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    state: Optional[str] = None,
+    division: Optional[str] = None,
+):
+    """
+    2-level product drilldown via vw_l_product_hierarchy:
+      (none)     → group by sku_h4_name  (division: FLITE / FLITE PU / HAWAI / SHOE)
+      division   → group by sku_h3_name  (category — deepest transaction grain)
+    GOLY% via date arithmetic (- INTERVAL 1 YEAR).
+    """
+    as_of = as_of or date.today()
+
+    if time == "CUSTOM" and (start_date is None or end_date is None):
+        raise ValueError("For time=CUSTOM you must pass start_date and end_date")
+
+    if division:
+        group_col   = "i.sku_h3_name"
+        group_label = "category"
+        drill_level = "category"
+    else:
+        group_col   = "ph.sku_h4_name"
+        group_label = "division"
+        drill_level = "division"
+
+    if time == "MTD":
+        cur_start = "date_trunc('month', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        date_params: List[object] = [as_of, as_of, as_of, as_of]
+    elif time == "QTD":
+        cur_start = "date_trunc('quarter', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        date_params = [as_of, as_of, as_of, as_of]
+    elif time == "YTD":
+        cur_start = "date_trunc('year', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        date_params = [as_of, as_of, as_of, as_of]
+    else:
+        cur_start = "CAST(? AS DATE)"
+        cur_end   = "CAST(? AS DATE)"
+        date_params = [start_date, end_date, start_date, end_date]
+
+    filter_clauses = ["1=1"]
+    filter_params: List[object] = []
+
+    if region:
+        filter_clauses.append("cm.customer_zone ILIKE ?")
+        filter_params.append(f"%{region}%")
+    if state:
+        filter_clauses.append("cm.customer_state = ?")
+        filter_params.append(state)
+    if division:
+        filter_clauses.append("ph.sku_h4_name = ?")
+        filter_params.append(division)
+
+    filter_sql = " AND ".join(filter_clauses)
+
+    sql = f"""
+    WITH
+    base AS (
+        SELECT
+            CAST(i.invoice_date AS DATE)        AS invoice_date,
+            CAST(i.gross_sale_value AS DOUBLE)  AS sales,
+            {group_col}                         AS dim
+        FROM main.vw_primary_invoice_data i
+        LEFT JOIN main.customer_master cm
+            ON i.customer_pdt_map = cm.customer_pdt_map
+        LEFT JOIN main.vw_l_product_hierarchy ph
+            ON i.sku_h3_name = ph.sku_h3_name
+        WHERE {filter_sql}
+    ),
+    current_sales AS (
+        SELECT dim, COALESCE(SUM(sales), 0) AS current_sales
+        FROM base
+        WHERE invoice_date BETWEEN {cur_start} AND {cur_end}
+        GROUP BY dim
+    ),
+    ly_sales AS (
+        SELECT dim, COALESCE(SUM(sales), 0) AS ly_value
+        FROM base
+        WHERE invoice_date BETWEEN ({cur_start}) - INTERVAL 1 YEAR
+                                AND ({cur_end})   - INTERVAL 1 YEAR
+        GROUP BY dim
+    )
+    SELECT
+        c.dim,
+        c.current_sales,
+        COALESCE(l.ly_value, 0)                 AS ly_value,
+        CASE
+            WHEN COALESCE(l.ly_value, 0) > 0
+            THEN ROUND((c.current_sales - l.ly_value) / l.ly_value * 100.0, 1)
+            ELSE NULL
+        END                                     AS goly_pct
+    FROM current_sales c
+    LEFT JOIN ly_sales l ON c.dim = l.dim
+    ORDER BY c.current_sales DESC
+    """
+
+    all_params = filter_params + date_params
+
+    con = get_duckdb_connection()
+    try:
+        rows = con.execute(sql, all_params).fetchall()
+        return {
+            "as_of": str(as_of),
+            "chart": "Primary Sales by Product Hierarchy",
+            "chart_type": "lineStackedColumnComboChart",
+            "drill_level": drill_level,
+            "group_by": group_label,
+            "comparison": "GOLY% via -1 YEAR arithmetic",
+            "filters": {
+                "time": time,
+                "start_date": None if start_date is None else str(start_date),
+                "end_date": None if end_date is None else str(end_date),
+                "region": region,
+                "state": state,
+                "division": division,
+            },
+            "data": [
+                {
+                    group_label: r[0],
+                    "primary_sales_value": _mask_revenue(r[1]),
+                    "primary_sales_ly_value": _mask_revenue(r[2]),
+                    "primary_sales_value_goly_pct": r[3],
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
 
 
+@router.get("/charts/primary-sales-drilldown")
+async def primary_sales_drilldown(
+    time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
+    as_of: Optional[date] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    state: Optional[str] = None,
+    district: Optional[str] = None,
+    category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
+        default=None
+    ),
+):
+    """
+    4-level geo drill-down via customer_master (auto-detected):
+      (none)                          → group by customer_zone   (region)
+      region                          → group by customer_state
+      region + state                  → group by customer_district
+      region + state + district       → group by customer_city
+    LY comparison uses calendar_table.last_year_same_date (GOLY%).
+    """
+    as_of = as_of or date.today()
+
+    if time == "CUSTOM" and (start_date is None or end_date is None):
+        raise ValueError("For time=CUSTOM you must pass start_date and end_date")
+
+    if region and state and district:
+        group_col   = "cm.customer_city"
+        group_label = "city"
+        drill_level = "city"
+    elif region and state:
+        group_col   = "cm.customer_district"
+        group_label = "district"
+        drill_level = "district"
+    elif region:
+        group_col   = "cm.customer_state"
+        group_label = "state"
+        drill_level = "state"
+    else:
+        group_col   = "cm.customer_zone"
+        group_label = "region"
+        drill_level = "region"
+
+    if time == "MTD":
+        cur_start = "date_trunc('month', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        date_params: List[object] = [as_of, as_of, as_of, as_of]
+    elif time == "QTD":
+        cur_start = "date_trunc('quarter', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        date_params = [as_of, as_of, as_of, as_of]
+    elif time == "YTD":
+        cur_start = "date_trunc('year', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        date_params = [as_of, as_of, as_of, as_of]
+    else:
+        cur_start = "CAST(? AS DATE)"
+        cur_end   = "CAST(? AS DATE)"
+        date_params = [start_date, end_date, start_date, end_date]
+
+    filter_clauses = ["1=1"]
+    filter_params: List[object] = []
+
+    if region:
+        filter_clauses.append("cm.customer_zone ILIKE ?")
+        filter_params.append(f"%{region}%")
+    if state:
+        filter_clauses.append("cm.customer_state = ?")
+        filter_params.append(state)
+    if district:
+        filter_clauses.append("cm.customer_district = ?")
+        filter_params.append(district)
+    if category:
+        placeholders = ",".join(["?"] * len(category))
+        filter_clauses.append(f"i.sku_h3_name IN ({placeholders})")
+        filter_params.extend(category)
+
+    filter_sql = " AND ".join(filter_clauses)
+
+    sql = f"""
+    WITH
+    base AS (
+        SELECT
+            CAST(i.invoice_date AS DATE)        AS invoice_date,
+            CAST(i.gross_sale_value AS DOUBLE)  AS sales,
+            {group_col}                         AS dim
+        FROM main.vw_primary_invoice_data i
+        LEFT JOIN main.customer_master cm
+            ON i.customer_pdt_map = cm.customer_pdt_map
+        WHERE {filter_sql}
+    ),
+    current_sales AS (
+        SELECT dim, COALESCE(SUM(sales), 0) AS current_sales
+        FROM base
+        WHERE invoice_date BETWEEN {cur_start} AND {cur_end}
+        GROUP BY dim
+    ),
+    ly_sales AS (
+        SELECT dim, COALESCE(SUM(sales), 0) AS ly_value
+        FROM base
+        WHERE invoice_date BETWEEN ({cur_start}) - INTERVAL 1 YEAR
+                                AND ({cur_end})   - INTERVAL 1 YEAR
+        GROUP BY dim
+    )
+    SELECT
+        c.dim,
+        c.current_sales,
+        COALESCE(l.ly_value, 0)                 AS ly_value,
+        CASE
+            WHEN COALESCE(l.ly_value, 0) > 0
+            THEN ROUND((c.current_sales - l.ly_value) / l.ly_value * 100.0, 1)
+            ELSE NULL
+        END                                     AS goly_pct
+    FROM current_sales c
+    LEFT JOIN ly_sales l ON c.dim = l.dim
+    ORDER BY c.current_sales DESC
+    """
+
+    all_params = filter_params + date_params
+
+    con = get_duckdb_connection()
+    try:
+        rows = con.execute(sql, all_params).fetchall()
+        return {
+            "as_of": str(as_of),
+            "chart": "Primary Sales by Region",
+            "chart_type": "lineStackedColumnComboChart",
+            "drill_level": drill_level,
+            "group_by": group_label,
+            "comparison": "GOLY% via calendar_table.last_year_same_date",
+            "filters": {
+                "time": time,
+                "start_date": None if start_date is None else str(start_date),
+                "end_date": None if end_date is None else str(end_date),
+                "region": region,
+                "state": state,
+                "district": district,
+                "category": category,
+            },
+            "data": [
+                {
+                    group_label: r[0],
+                    "primary_sales_value": _mask_revenue(r[1]),
+                    "primary_sales_ly_value": _mask_revenue(r[2]),
+                    "primary_sales_value_goly_pct": r[3],
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+@router.get("/charts/outlet-funnel")
+async def outlet_funnel(
+    time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
+    as_of: Optional[date] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+):
+    """
+    Outlet funnel with 4 stages:
+      Universe → Covered → Productive → Billed
+    Returns: counts, conversion %, drop-off %, GOLM % at each stage.
+    Universe uses a 90-day lookback window; GOLM compares to the same
+    elapsed period in the prior month.
+    """
+    as_of = as_of or date.today()
+
+    if time == "CUSTOM" and (start_date is None or end_date is None):
+        raise ValueError("For time=CUSTOM you must pass start_date and end_date")
+
+    if time == "MTD":
+        cur_start = "date_trunc('month', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        lm_start  = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end    = ("date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+                     " + (extract(day FROM CAST(? AS DATE)) - 1) * INTERVAL 1 DAY")
+        date_params: List[object] = [as_of, as_of, as_of, as_of, as_of]
+    elif time == "QTD":
+        cur_start = "date_trunc('quarter', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        lm_start  = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end    = "CAST(? AS DATE) - INTERVAL 1 MONTH"
+        date_params = [as_of, as_of, as_of, as_of]
+    elif time == "YTD":
+        cur_start = "date_trunc('year', CAST(? AS DATE))"
+        cur_end   = "CAST(? AS DATE)"
+        lm_start  = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end    = "CAST(? AS DATE) - INTERVAL 1 MONTH"
+        date_params = [as_of, as_of, as_of, as_of]
+    else:
+        cur_start = "CAST(? AS DATE)"
+        cur_end   = "CAST(? AS DATE)"
+        lm_start  = "CAST(? AS DATE) - INTERVAL 1 MONTH"
+        lm_end    = "CAST(? AS DATE) - INTERVAL 1 MONTH"
+        date_params = [start_date, end_date, start_date, end_date]
+
+    sql = f"""
+    WITH
+    date_bounds AS (
+        SELECT
+            {cur_start}  AS cur_start,
+            {cur_end}    AS cur_end,
+            {lm_start}   AS lm_start,
+            {lm_end}     AS lm_end
+    ),
+
+    universe_cur AS (
+        SELECT COUNT(DISTINCT outlet_code) AS v
+        FROM (
+            SELECT outlet_code
+            FROM main.vw_l_secondary_visit_order_shifted_mapped_only
+            WHERE CAST(order_date AS DATE)
+                  BETWEEN (SELECT cur_start FROM date_bounds) - INTERVAL 90 DAY
+                      AND (SELECT cur_end   FROM date_bounds)
+            UNION
+            SELECT outlet_code
+            FROM main.vw_l_dms_invoice_data
+            WHERE CAST(invoice_date AS DATE)
+                  BETWEEN (SELECT cur_start FROM date_bounds) - INTERVAL 90 DAY
+                      AND (SELECT cur_end   FROM date_bounds)
+        ) u
+    ),
+    covered_cur AS (
+        SELECT COUNT(DISTINCT outlet_code) AS v
+        FROM main.vw_l_secondary_visit_order_shifted_mapped_only
+        WHERE CAST(order_date AS DATE)
+              BETWEEN (SELECT cur_start FROM date_bounds) AND (SELECT cur_end FROM date_bounds)
+    ),
+    productive_cur AS (
+        SELECT COUNT(DISTINCT outlet_code) AS v
+        FROM main.vw_l_secondary_visit_order_shifted_mapped_only
+        WHERE CAST(order_date AS DATE)
+              BETWEEN (SELECT cur_start FROM date_bounds) AND (SELECT cur_end FROM date_bounds)
+          AND order_qty_in_pairs > 0
+    ),
+    billed_cur AS (
+        SELECT COUNT(DISTINCT outlet_code) AS v
+        FROM main.vw_l_dms_invoice_data
+        WHERE CAST(invoice_date AS DATE)
+              BETWEEN (SELECT cur_start FROM date_bounds) AND (SELECT cur_end FROM date_bounds)
+    ),
+
+    universe_lm AS (
+        SELECT COUNT(DISTINCT outlet_code) AS v
+        FROM (
+            SELECT outlet_code
+            FROM main.vw_l_secondary_visit_order_shifted_mapped_only
+            WHERE CAST(order_date AS DATE)
+                  BETWEEN (SELECT lm_start FROM date_bounds) - INTERVAL 90 DAY
+                      AND (SELECT lm_end   FROM date_bounds)
+            UNION
+            SELECT outlet_code
+            FROM main.vw_l_dms_invoice_data
+            WHERE CAST(invoice_date AS DATE)
+                  BETWEEN (SELECT lm_start FROM date_bounds) - INTERVAL 90 DAY
+                      AND (SELECT lm_end   FROM date_bounds)
+        ) u
+    ),
+    covered_lm AS (
+        SELECT COUNT(DISTINCT outlet_code) AS v
+        FROM main.vw_l_secondary_visit_order_shifted_mapped_only
+        WHERE CAST(order_date AS DATE)
+              BETWEEN (SELECT lm_start FROM date_bounds) AND (SELECT lm_end FROM date_bounds)
+    ),
+    productive_lm AS (
+        SELECT COUNT(DISTINCT outlet_code) AS v
+        FROM main.vw_l_secondary_visit_order_shifted_mapped_only
+        WHERE CAST(order_date AS DATE)
+              BETWEEN (SELECT lm_start FROM date_bounds) AND (SELECT lm_end FROM date_bounds)
+          AND order_qty_in_pairs > 0
+    ),
+    billed_lm AS (
+        SELECT COUNT(DISTINCT outlet_code) AS v
+        FROM main.vw_l_dms_invoice_data
+        WHERE CAST(invoice_date AS DATE)
+              BETWEEN (SELECT lm_start FROM date_bounds) AND (SELECT lm_end FROM date_bounds)
+    )
+
+    SELECT
+        uc.v  AS universe_outlets,
+        co.v  AS covered_outlets,
+        pr.v  AS productive_outlets,
+        bi.v  AS billed_outlets,
+
+        ROUND(co.v * 100.0 / NULLIF(uc.v, 0), 1) AS covered_conv_pct,
+        ROUND(pr.v * 100.0 / NULLIF(uc.v, 0), 1) AS productive_conv_pct,
+        ROUND(bi.v * 100.0 / NULLIF(uc.v, 0), 1) AS billed_conv_pct,
+
+        ROUND((1 - co.v * 1.0 / NULLIF(uc.v, 0)) * 100, 1) AS drop_universe_to_covered_pct,
+        ROUND((1 - pr.v * 1.0 / NULLIF(co.v, 0)) * 100, 1) AS drop_covered_to_productive_pct,
+        ROUND((1 - bi.v * 1.0 / NULLIF(pr.v, 0)) * 100, 1) AS drop_productive_to_billed_pct,
+
+        ROUND(uc.v * 100.0 / NULLIF(ul.v, 0), 1) AS universe_golm_pct,
+        ROUND(co.v * 100.0 / NULLIF(cl.v, 0), 1) AS covered_golm_pct,
+        ROUND(pr.v * 100.0 / NULLIF(pl.v, 0), 1) AS productive_golm_pct,
+        ROUND(bi.v * 100.0 / NULLIF(bl.v, 0), 1) AS billed_golm_pct,
+
+        ROUND(bi.v * 100.0 / NULLIF(uc.v, 0), 1) AS end_to_end_conv_pct
+
+    FROM universe_cur uc, covered_cur co, productive_cur pr, billed_cur bi,
+         universe_lm ul,  covered_lm cl,  productive_lm pl,  billed_lm bl
+    """
+
+    con = get_duckdb_connection()
+    try:
+        row = con.execute(sql, date_params).fetchone()
+        if not row:
+            return {"stages": [], "end_to_end_conv_pct": None}
+
+        (
+            universe_n, covered_n, productive_n, billed_n,
+            covered_conv, productive_conv, billed_conv,
+            drop_u2c, drop_c2p, drop_p2b,
+            universe_golm, covered_golm, productive_golm, billed_golm,
+            end_to_end,
+        ) = row
+
+        stages = [
+            {
+                "stage": "Total Outlet Universe",
+                "label": "Outlets in DMS",
+                "count": universe_n,
+                "conv_pct": 100.0,
+                "drop_to_next_pct": drop_u2c,
+                "golm_pct": universe_golm,
+            },
+            {
+                "stage": "Covered Outlets",
+                "label": "Visited / Called this period",
+                "count": covered_n,
+                "conv_pct": covered_conv,
+                "drop_to_next_pct": drop_c2p,
+                "golm_pct": covered_golm,
+            },
+            {
+                "stage": "Productive Outlets",
+                "label": "Order captured in DMS",
+                "count": productive_n,
+                "conv_pct": productive_conv,
+                "drop_to_next_pct": drop_p2b,
+                "golm_pct": productive_golm,
+            },
+            {
+                "stage": "Billed Outlets",
+                "label": "Invoice raised",
+                "count": billed_n,
+                "conv_pct": billed_conv,
+                "drop_to_next_pct": None,
+                "golm_pct": billed_golm,
+            },
+        ]
+        return {
+            "as_of": str(as_of),
+            "chart": "Outlet Funnel",
+            "time": time,
+            "end_to_end_conv_pct": end_to_end,
+            "stages": stages,
+        }
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+@router.get("/charts/sec-vs-pri-ratio")
+async def sec_vs_pri_ratio(
+    months: int = 4,
+    as_of: Optional[date] = None,
+    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    state: Optional[str] = None,
+    category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
+        default=None
+    ),
+    norm: float = 80.0,
+):
+    """
+    Monthly Sec:Pri ratio trend for the last `months` months.
+    Returns: monthly series, current MTD ratio, LM ratio, delta (pp), norm reference.
+    Join key: customer_pdt_map (links both invoice tables at distributor level).
+    """
+    as_of = as_of or date.today()
+
+    m = as_of.month - (months - 1)
+    y = as_of.year
+    while m <= 0:
+        m += 12
+        y -= 1
+    series_start = date(y, m, 1)
+
+    pri_clauses = ["1=1"]
+    pri_params: List[object] = []
+    sec_clauses = ["1=1"]
+    sec_params: List[object] = []
+
+    if region:
+        pri_clauses.append("pcm.customer_zone ILIKE ?")
+        pri_params.append(f"%{region}%")
+        sec_clauses.append("scm.customer_zone ILIKE ?")
+        sec_params.append(f"%{region}%")
+    if state:
+        pri_clauses.append("pcm.customer_state = ?")
+        pri_params.append(state)
+        sec_clauses.append("scm.customer_state = ?")
+        sec_params.append(state)
+    if category:
+        placeholders = ",".join(["?"] * len(category))
+        pri_clauses.append(f"i.sku_h3_name IN ({placeholders})")
+        pri_params.extend(category)
+
+    pri_filter = " AND ".join(pri_clauses)
+    sec_filter = " AND ".join(sec_clauses)
+
+    date_params: List[object] = [series_start, as_of, series_start, as_of]
+
+    sql = f"""
+    WITH
+    primary_monthly AS (
+        SELECT
+            date_trunc('month', CAST(i.invoice_date AS DATE))  AS month,
+            SUM(CAST(i.gross_sale_value AS DOUBLE))            AS pri_sales
+        FROM main.vw_primary_invoice_data i
+        LEFT JOIN main.customer_master pcm
+            ON i.customer_pdt_map = pcm.customer_pdt_map
+        WHERE {pri_filter}
+          AND CAST(i.invoice_date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+        GROUP BY 1
+    ),
+    secondary_monthly AS (
+        SELECT
+            date_trunc('month', CAST(d.invoice_date AS DATE))  AS month,
+            SUM(CAST(d.net_sale_value AS DOUBLE))              AS sec_sales
+        FROM main.vw_l_dms_invoice_data d
+        LEFT JOIN main.customer_master scm
+            ON d.customer_pdt_map = scm.customer_pdt_map
+        WHERE {sec_filter}
+          AND CAST(d.invoice_date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+        GROUP BY 1
+    )
+    SELECT
+        p.month,
+        COALESCE(p.pri_sales, 0)                                 AS pri_sales,
+        COALESCE(s.sec_sales, 0)                                 AS sec_sales,
+        ROUND(
+            COALESCE(s.sec_sales, 0) * 100.0 / NULLIF(p.pri_sales, 0),
+            1
+        )                                                        AS ratio_pct
+    FROM primary_monthly p
+    LEFT JOIN secondary_monthly s ON p.month = s.month
+    ORDER BY p.month
+    """
+
+    all_params = pri_params + sec_params + date_params
+
+    con = get_duckdb_connection()
+    try:
+        rows = con.execute(sql, all_params).fetchall()
+
+        series = [
+            {
+                "month": r[0].strftime("%b %Y") if r[0] else None,
+                "primary_sales_value": _mask_revenue(r[1]),
+                "secondary_sales_value": _mask_revenue(r[2]),
+                "secondary_vs_primary_ratio": r[3],
+            }
+            for r in rows
+        ]
+
+        current_ratio = series[-1]["secondary_vs_primary_ratio"] if series else None
+        lm_ratio = series[-2]["secondary_vs_primary_ratio"] if len(series) >= 2 else None
+        delta_pp = (
+            round(current_ratio - lm_ratio, 1)
+            if current_ratio is not None and lm_ratio is not None
+            else None
+        )
+
+        return {
+            "as_of": str(as_of),
+            "chart": "Sec vs Pri Ratio",
+            "chart_type": "lineChart",
+            "months": months,
+            "current_ratio_pct": current_ratio,
+            "lm_ratio_pct": lm_ratio,
+            "delta_pp": delta_pp,
+            "norm_pct": norm,
+            "filters": {
+                "region": region,
+                "state": state,
+                "category": category,
+            },
+            "series": series,
+        }
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
