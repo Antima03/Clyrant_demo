@@ -124,6 +124,7 @@ export type ScreenId =
   | 'S-07'
   | 'S-08'
   | 'S-09'
+  | 'WAR-ROOM'
 
 /** Causal dimensions that decompose a drift (spec § 3). */
 export interface CausalDims {
@@ -230,4 +231,52 @@ export interface ExceptionRule {
 export interface ExceptionSummary {
   totalOpen: number
   topRules: ExceptionRule[]
+}
+
+// ─── War Room ─────────────────────────────────────────────────────────────
+export type WarRoomStatus = 'open' | 'in-progress' | 'awaiting' | 'closed'
+export type DueType = 'today' | 'week' | 'month'
+
+export interface WarRoomAssignee {
+  initials: string
+  name: string
+  role: string
+}
+
+export interface WarRoomAction {
+  id: string
+  driftId?: string
+  name: string
+  meta: string
+  status: WarRoomStatus
+  assignee: WarRoomAssignee
+  dueLabel: string
+  dueType: DueType
+  hasAI?: boolean
+  hasTrade?: boolean
+  progressPct?: number
+  progressLabel?: string
+  aiNote?: string
+}
+
+// ─── Assignment ───────────────────────────────────────────────────────────
+export interface AssignmentPayload {
+  driftId: string
+  assignedTo: string
+  coAssign: string
+  responseType: string
+  slaDays: number
+  notes: string
+  routeTo: 'war-room' | 'sales-excellence'
+}
+
+// ─── Drift history event ──────────────────────────────────────────────────
+export interface HistoryEvent {
+  id: string
+  timestamp: string
+  actor: string
+  actorRole: string
+  action: string
+  detail: string
+  kind: 'assigned' | 'field' | 'ai' | 'status' | 'note' | 'escalated'
 }

@@ -31,6 +31,16 @@ interface ViewCtx {
   /** Current user role (affects default scope labels). */
   role: Role
   setRole: (r: Role) => void
+
+  /** Assignment workflow modal — opens for the given drift. */
+  assignmentDrift: Drift | null
+  openAssignment: (d: Drift) => void
+  closeAssignment: () => void
+
+  /** Drift history slide-in panel. */
+  historyDrift: Drift | null
+  openHistory: (d: Drift) => void
+  closeHistory: () => void
 }
 
 export const SCREEN_META: Record<ScreenId, { title: string; subtitle: string }> = {
@@ -44,6 +54,7 @@ export const SCREEN_META: Record<ScreenId, { title: string; subtitle: string }> 
   'S-07': { title: 'Benchmark', subtitle: 'Client vs cohort median / P75' },
   'S-08': { title: 'Outstanding Health', subtitle: '>30d outstanding, collection rate' },
   'S-09': { title: 'Untapped Potential', subtitle: 'Under-penetrated × under-indexed towns' },
+  'WAR-ROOM': { title: 'War Room', subtitle: 'Action execution board · this-month urgency' },
 }
 
 const Ctx = createContext<ViewCtx | null>(null)
@@ -56,6 +67,8 @@ export function ViewProvider({ children }: { children: ReactNode }) {
   >(null)
   const [aiOpen, setAiOpen] = useState(false)
   const [role, setRole] = useState<Role>('RSM')
+  const [assignmentDrift, setAssignmentDrift] = useState<Drift | null>(null)
+  const [historyDrift, setHistoryDrift] = useState<Drift | null>(null)
 
   const openDrift = useCallback((d: Drift) => setSelectedDrift(d), [])
   const closeDrift = useCallback(() => setSelectedDrift(null), [])
@@ -64,6 +77,10 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     [],
   )
   const closeDecomposition = useCallback(() => setDecompositionTarget(null), [])
+  const openAssignment = useCallback((d: Drift) => setAssignmentDrift(d), [])
+  const closeAssignment = useCallback(() => setAssignmentDrift(null), [])
+  const openHistory = useCallback((d: Drift) => setHistoryDrift(d), [])
+  const closeHistory = useCallback(() => setHistoryDrift(null), [])
 
   // Closing the drift detail whenever the user navigates to a new screen.
   const setScreenSafe = useCallback((s: ScreenId) => {
@@ -85,6 +102,12 @@ export function ViewProvider({ children }: { children: ReactNode }) {
       setAiOpen,
       role,
       setRole,
+      assignmentDrift,
+      openAssignment,
+      closeAssignment,
+      historyDrift,
+      openHistory,
+      closeHistory,
     }),
     [
       screen,
@@ -97,6 +120,12 @@ export function ViewProvider({ children }: { children: ReactNode }) {
       closeDecomposition,
       aiOpen,
       role,
+      assignmentDrift,
+      openAssignment,
+      closeAssignment,
+      historyDrift,
+      openHistory,
+      closeHistory,
     ],
   )
 

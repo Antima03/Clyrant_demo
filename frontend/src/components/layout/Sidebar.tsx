@@ -30,6 +30,7 @@ const SCREEN_ICONS: Record<ScreenId, React.ElementType> = {
   'S-07': LineChart,
   'S-08': Landmark,
   'S-09': Compass,
+  'WAR-ROOM': ShieldAlert,
 }
 
 const SCREEN_ORDER: ScreenId[] = [
@@ -74,11 +75,6 @@ function SidebarItem({
   )
 }
 
-const WAR_ROOM = [
-  { id: 'wr-a', label: 'OOS Surge — SOUTH' },
-  { id: 'wr-b', label: 'Pipeline Stuffing' },
-]
-
 export function Sidebar() {
   const { screen, setScreen } = useView()
   const [hover, setHover] = useState(false)
@@ -113,9 +109,12 @@ export function Sidebar() {
       {/* War room */}
       <div className="py-2">
         <div className="px-3 pb-1 cy-section-label">War Room</div>
-        {WAR_ROOM.map((w) => (
-          <SidebarItem key={w.id} label={w.label} icon={ShieldAlert} />
-        ))}
+        <SidebarItem
+          label="Action Board"
+          icon={ShieldAlert}
+          active={screen === 'WAR-ROOM'}
+          onClick={() => setScreen('WAR-ROOM')}
+        />
       </div>
 
       <div className="flex-1" />

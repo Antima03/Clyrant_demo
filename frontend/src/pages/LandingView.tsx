@@ -13,6 +13,8 @@ import { MobileTabBar, type MobilePanel } from '@/components/layout/MobileTabBar
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
 import { ScreenOverview } from './ScreenOverview'
+import { WarRoomBoard } from '@/components/warroom/WarRoomBoard'
+import { AssignmentModal } from '@/components/assignment/AssignmentModal'
 import { useFilters } from '@/context/FiltersContext'
 import { useView } from '@/context/ViewContext'
 import { useAsync } from '@/hooks/useAsync'
@@ -47,6 +49,8 @@ export function LandingView() {
     closeDecomposition,
     aiOpen,
     setAiOpen,
+    assignmentDrift,
+    closeAssignment,
   } = useView()
   const [mobileTab, setMobileTab] = useState<MobilePanel>('kpis')
   const [shareToast, setShareToast] = useState<string | null>(null)
@@ -74,6 +78,12 @@ export function LandingView() {
     toast(`${d.id} marked as resolved · lifecycle → monitoring.`)
   const handleEscalate = (d: Drift) =>
     toast(`${d.id} escalated to War Room queue.`)
+
+  const handleAssignmentConfirm = () => {
+    toast(`Assignment confirmed — routed to War Room.`)
+    closeAssignment()
+    setScreen('WAR-ROOM')
+  }
 
   const handleKPIDrill = (k: KPI) => {
     openDecomposition({ kind: 'kpi', id: k.id, label: k.label })
@@ -130,6 +140,8 @@ export function LandingView() {
               onResolve={handleResolve}
               onEscalate={handleEscalate}
             />
+          ) : screen === 'WAR-ROOM' ? (
+            <WarRoomBoard />
           ) : screen !== 'S-00' ? (
             <ScreenOverview screen={screen} />
           ) : (
@@ -187,20 +199,13 @@ export function LandingView() {
             </div>
           )}
 
-          {/* Ask AI FAB — z-20 to ensure it floats above Recharts SVGs */}
-          {isLanding && (
-            <AskAIFab
-              onClick={() => setAiOpen(true)}
-              className="absolute bottom-4 right-4 z-20"
-            />
-          )}
         </main>
 
-        {/* DRIFT PANEL */}
+        {/* DRIFT PANEL — hidden on War Room */}
         <div
           className={cn(
             'min-h-0',
-            mobileTab === 'drifts' ? 'block w-full' : 'hidden md:block',
+            screen === 'WAR-ROOM' ? 'hidden' : mobileTab === 'drifts' ? 'block w-full' : 'hidden md:block',
           )}
         >
           {drifts.data ? (
@@ -227,6 +232,21 @@ export function LandingView() {
         onClose={closeDecomposition}
       />
       <AIPanel open={aiOpen} onClose={() => setAiOpen(false)} />
+
+      {/* Ask AI FAB — fixed, floats over every screen */}
+      <AskAIFab
+        onClick={() => setAiOpen(true)}
+        className="fixed bottom-5 right-5 z-40"
+      />
+
+      {/* Assignment Modal */}
+      {assignmentDrift && (
+        <AssignmentModal
+          drift={assignmentDrift}
+          onClose={closeAssignment}
+          onConfirm={handleAssignmentConfirm}
+        />
+      )}
 
       {/* Share toast */}
       {shareToast && (

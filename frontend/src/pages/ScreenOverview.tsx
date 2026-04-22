@@ -26,7 +26,7 @@ import { landingService } from '@/services/landing'
 import { screensMock, type ScreenContent } from '@/mocks/screens'
 
 interface Props {
-  screen: Exclude<ScreenId, 'S-00'>
+  screen: Exclude<ScreenId, 'S-00' | 'WAR-ROOM'>
 }
 
 // Map palette tokens → exact hex values used by Recharts SVGs

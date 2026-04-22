@@ -48,7 +48,7 @@ const MONTHS = ['Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr']
 const trend = (vals: number[], benchmark?: number) =>
   vals.map((v, i) => ({ month: MONTHS[i]!, value: v, benchmark }))
 
-export const screensMock: Record<Exclude<ScreenId, 'S-00'>, ScreenContent> = {
+export const screensMock: Record<Exclude<ScreenId, 'S-00' | 'WAR-ROOM'>, ScreenContent> = {
   // All screens with complete helpful content...
   'S-04': {
     primaryColor: 'purple',

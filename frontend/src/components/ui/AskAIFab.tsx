@@ -1,4 +1,3 @@
-import { Send } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
 interface AskAIFabProps {
@@ -6,24 +5,39 @@ interface AskAIFabProps {
   className?: string
 }
 
-/**
- * Bottom-right floating action button — solid ink circle, no gradient/glow.
- * Spec § 2.1: anchored in main column, not over the Drift Panel.
- */
 export function AskAIFab({ onClick, className }: AskAIFabProps) {
   return (
     <button
       type="button"
       onClick={onClick}
-      title="Ask AI"
       aria-label="Ask AI"
       className={cn(
-        'h-8 w-8 rounded-full bg-ink text-white flex items-center justify-center',
-        'hover:bg-ink-2 transition-colors',
+        'group flex items-center gap-2 pl-3 pr-4 h-9',
+        'bg-ink text-white',
+        'hover:bg-ink/90 transition-all duration-150',
+        'shadow-lg hover:shadow-xl',
         className,
       )}
     >
-      <Send className="h-[13px] w-[13px]" />
+      {/* Spark icon — custom SVG, cleaner than any lucide option */}
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 15 15"
+        fill="none"
+        className="shrink-0 transition-transform duration-150 group-hover:scale-110"
+      >
+        {/* four-point star / spark */}
+        <path
+          d="M7.5 1 L8.4 6.6 L14 7.5 L8.4 8.4 L7.5 14 L6.6 8.4 L1 7.5 L6.6 6.6 Z"
+          fill="white"
+        />
+        {/* small accent dot top-right */}
+        <circle cx="12" cy="3" r="1.1" fill="white" opacity="0.6" />
+      </svg>
+      <span className="text-[11px] font-mono font-semibold uppercase tracking-widest">
+        Ask AI
+      </span>
     </button>
   )
 }

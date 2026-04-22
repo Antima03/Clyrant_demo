@@ -1,10 +1,9 @@
-import type { ComponentType, SVGProps } from 'react'
+import { useState, type ComponentType, type SVGProps } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
-  CheckCircle2,
   Flame,
-  MessageCircle,
+  History,
   MessageSquare,
   Share2,
   Wrench,
@@ -13,6 +12,7 @@ import {
 import type { Drift } from '@/types'
 import { Card } from '@/components/ui/Card'
 import { FindingDetailViz } from './FindingDetailViz'
+import { DriftHistory } from './DriftHistory'
 import { useView, SCREEN_META } from '@/context/ViewContext'
 import { useFilters } from '@/context/FiltersContext'
 import { useAsync } from '@/hooks/useAsync'
@@ -231,10 +231,10 @@ export function FindingDetail({
   onShare,
   onDiscuss,
   onResolve,
-  onEscalate,
 }: Props) {
   const { filters } = useFilters()
-  const { openDrift } = useView()
+  const { openDrift, openAssignment } = useView()
+  const [historyOpen, setHistoryOpen] = useState(false)
   const driftsQuery = useAsync(() => landingService.drifts(filters), [filters])
 
   // Derive "other drifts with overlapping signals" — top 4 by relation score.
@@ -273,12 +273,24 @@ export function FindingDetail({
         >
           <ArrowLeft className="h-3 w-3" /> Back
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => onShare?.(drift)}
             className="flex items-center gap-1 text-3xs font-mono text-ink uppercase tracking-wide border border-black/[0.08] px-2 h-6 cy-hover"
           >
             <Share2 className="h-3 w-3" /> Share
+          </button>
+          <button
+            onClick={() => setHistoryOpen(true)}
+            className="flex items-center gap-1 text-3xs font-mono text-ink uppercase tracking-wide border border-black/[0.08] px-2 h-6 cy-hover"
+          >
+            <History className="h-3 w-3" /> History
+          </button>
+          <button
+            onClick={() => openAssignment(drift)}
+            className="flex items-center gap-1 text-3xs font-mono text-severity-purple uppercase tracking-wide border border-severity-purple/40 px-2 h-6 cy-hover bg-severity-purple/[0.04]"
+          >
+            <Flame className="h-3 w-3" /> Assign
           </button>
           <button
             onClick={onBack}
@@ -327,9 +339,6 @@ export function FindingDetail({
           Confidence <span className="text-ink-2">{drift.confidence}%</span>
         </div>
 
-        {/* Lifecycle timeline — where this finding sits in the
-            Discover → Resolve journey */}
-        <LifecycleTimeline drift={drift} />
       </div>
 
       {/* Rule-specific rich visualisation — renders a generic fallback
@@ -481,46 +490,13 @@ export function FindingDetail({
         </div>
       )}
 
-      {/* ─── Action rail ────────────────────────────────────────────────
-          Primary CTAs for the finding. Spec § 6 lists Share / Discuss /
-          Resolve / Escalate as the canonical action set; Escalate carries
-          the war-room accent. Layout adapts from stacked-2 on mobile to
-          a 4-up row on md+. */}
-      <div className="mt-2.5 pt-2.5 border-t border-black/[0.06]">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="cy-section-label">Actions</span>
-          <span className="text-3xs font-mono text-ink-3 uppercase tracking-wide">
-            Finding {drift.id} · {drift.severity}
-          </span>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          <ActionButton
-            icon={Share2}
-            label="Share"
-            hint="Send to WhatsApp / export PDF card"
-            onClick={() => onShare?.(drift)}
-          />
-          <ActionButton
-            icon={MessageCircle}
-            label="Discuss"
-            hint="Open org-context-graph note thread"
-            onClick={() => onDiscuss?.(drift)}
-          />
-          <ActionButton
-            icon={CheckCircle2}
-            label="Resolve"
-            hint="Mark as addressed — moves lifecycle to monitoring"
-            onClick={() => onResolve?.(drift)}
-          />
-          <ActionButton
-            icon={Flame}
-            label="Escalate to War Room"
-            tone="escalate"
-            hint="Pin to the RSM/ZSM war-room queue"
-            onClick={() => onEscalate?.(drift)}
-          />
-        </div>
-      </div>
+      {/* History slide-in */}
+      {historyOpen && (
+        <>
+          <div className="fixed inset-0 z-30 bg-black/10" onClick={() => setHistoryOpen(false)} />
+          <DriftHistory drift={drift} onClose={() => setHistoryOpen(false)} />
+        </>
+      )}
     </div>
   )
 }
