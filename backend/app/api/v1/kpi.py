@@ -1710,3 +1710,451 @@ async def sec_vs_pri_ratio(
             con.close()
         except Exception:
             pass
+
+
+@router.get("/charts/outlet-billed-vs-ordered")
+async def outlet_billed_vs_ordered(
+    months: int = 4,
+    as_of: Optional[date] = None,
+):
+    """
+    Monthly line chart: Outlet Billed vs Outlet Order Taken.
+      - Outlet Billed       : DISTINCTCOUNT(vw_l_dms_invoice_data.outlet_code) per month
+      - Outlet Order Taken  : DISTINCTCOUNT(vw_l_secondary_visit_order.outlet_code) per month
+    Gap = ordered − billed (orders not converted to invoice/delivery).
+    """
+    as_of = as_of or date.today()
+
+    m = as_of.month - (months - 1)
+    y = as_of.year
+    while m <= 0:
+        m += 12
+        y -= 1
+    series_start = date(y, m, 1)
+
+    sql = """
+    WITH
+    billed_monthly AS (
+        SELECT
+            date_trunc('month', CAST(invoice_date AS DATE))  AS month,
+            COUNT(DISTINCT outlet_code)                      AS billed_outlets
+        FROM main.vw_l_dms_invoice_data
+        WHERE CAST(invoice_date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+        GROUP BY 1
+    ),
+    ordered_monthly AS (
+        SELECT
+            date_trunc('month', CAST(order_date AS DATE))    AS month,
+            COUNT(DISTINCT outlet_code)                      AS ordered_outlets
+        FROM main.vw_l_secondary_visit_order_shifted_mapped_only
+        WHERE CAST(order_date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+        GROUP BY 1
+    )
+    SELECT
+        COALESCE(b.month, o.month)          AS month,
+        COALESCE(b.billed_outlets, 0)       AS billed_outlets,
+        COALESCE(o.ordered_outlets, 0)      AS ordered_outlets,
+        COALESCE(o.ordered_outlets, 0)
+            - COALESCE(b.billed_outlets, 0) AS gap
+    FROM billed_monthly b
+    FULL OUTER JOIN ordered_monthly o ON b.month = o.month
+    ORDER BY 1
+    """
+
+    date_params: List[object] = [series_start, as_of, series_start, as_of]
+
+    con = get_duckdb_connection()
+    try:
+        rows = con.execute(sql, date_params).fetchall()
+
+        series = [
+            {
+                "month": r[0].strftime("%b %Y") if r[0] else None,
+                "outlet_billed": r[1],
+                "outlet_order_taken": r[2],
+                "gap": r[3],
+            }
+            for r in rows
+        ]
+
+        current = series[-1] if series else {}
+        lm = series[-2] if len(series) >= 2 else {}
+
+        return {
+            "as_of": str(as_of),
+            "chart": "Outlet Billed vs Outlet Order Taken",
+            "chart_type": "lineChart",
+            "months": months,
+            "current_month": {
+                "month": current.get("month"),
+                "outlet_billed": current.get("outlet_billed"),
+                "outlet_order_taken": current.get("outlet_order_taken"),
+                "gap": current.get("gap"),
+                "billed_vs_lm_delta": (
+                    current["outlet_billed"] - lm["outlet_billed"]
+                    if current.get("outlet_billed") is not None and lm.get("outlet_billed") is not None
+                    else None
+                ),
+                "ordered_vs_lm_delta": (
+                    current["outlet_order_taken"] - lm["outlet_order_taken"]
+                    if current.get("outlet_order_taken") is not None and lm.get("outlet_order_taken") is not None
+                    else None
+                ),
+            },
+            "series": series,
+        }
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+@router.get("/tertiary-kpi/throughput")
+async def throughput(
+    time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
+    as_of: Optional[date] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    state: Optional[str] = None,
+    category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
+        default=None
+    ),
+):
+    """
+    Throughput = SUM(net_sale_value) / COUNT(DISTINCT outlet_code)
+    Source: vw_l_dms_invoice_data
+    Returns current period, LM, and LYSM with % change.
+    """
+    as_of = as_of or date.today()
+
+    if time == "CUSTOM" and (start_date is None or end_date is None):
+        raise ValueError("For time=CUSTOM you must pass start_date and end_date")
+
+    if time == "MTD":
+        cur_start  = "date_trunc('month', CAST(? AS DATE))"
+        cur_end    = "CAST(? AS DATE)"
+        lm_start   = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end     = "date_trunc('month', CAST(? AS DATE)) - INTERVAL 1 DAY"
+        lysm_start = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 YEAR)"
+        lysm_end   = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 YEAR) + INTERVAL 1 MONTH - INTERVAL 1 DAY"
+        date_params: List[object] = [as_of, as_of, as_of, as_of, as_of, as_of]
+    elif time == "QTD":
+        cur_start  = "date_trunc('quarter', CAST(? AS DATE))"
+        cur_end    = "CAST(? AS DATE)"
+        lm_start   = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end     = "date_trunc('month', CAST(? AS DATE)) - INTERVAL 1 DAY"
+        lysm_start = "date_trunc('quarter', CAST(? AS DATE) - INTERVAL 1 YEAR)"
+        lysm_end   = "CAST(? AS DATE) - INTERVAL 1 YEAR"
+        date_params = [as_of, as_of, as_of, as_of, as_of, as_of]
+    elif time == "YTD":
+        cur_start  = "date_trunc('year', CAST(? AS DATE))"
+        cur_end    = "CAST(? AS DATE)"
+        lm_start   = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end     = "date_trunc('month', CAST(? AS DATE)) - INTERVAL 1 DAY"
+        lysm_start = "date_trunc('year', CAST(? AS DATE) - INTERVAL 1 YEAR)"
+        lysm_end   = "CAST(? AS DATE) - INTERVAL 1 YEAR"
+        date_params = [as_of, as_of, as_of, as_of, as_of, as_of]
+    else:
+        cur_start  = "CAST(? AS DATE)"
+        cur_end    = "CAST(? AS DATE)"
+        lm_start   = "CAST(? AS DATE) - INTERVAL 1 MONTH"
+        lm_end     = "CAST(? AS DATE) - INTERVAL 1 MONTH"
+        lysm_start = "CAST(? AS DATE) - INTERVAL 1 YEAR"
+        lysm_end   = "CAST(? AS DATE) - INTERVAL 1 YEAR"
+        date_params = [start_date, end_date, start_date, end_date, start_date, end_date]
+
+    filter_clauses = ["1=1"]
+    filter_params: List[object] = []
+
+    if region:
+        filter_clauses.append("cm.customer_zone ILIKE ?")
+        filter_params.append(f"%{region}%")
+    if state:
+        filter_clauses.append("cm.customer_state = ?")
+        filter_params.append(state)
+    if category:
+        placeholders = ",".join(["?"] * len(category))
+        filter_clauses.append(f"d.sku_h3_name IN ({placeholders})")
+        filter_params.extend(category)
+
+    filter_sql = " AND ".join(filter_clauses)
+
+    sql = f"""
+    WITH
+    filtered AS (
+        SELECT
+            CAST(d.invoice_date AS DATE)        AS invoice_date,
+            CAST(d.net_sale_value AS DOUBLE)    AS sale_value,
+            d.outlet_code
+        FROM main.vw_l_dms_invoice_data d
+        LEFT JOIN main.customer_master cm
+            ON d.customer_pdt_map = cm.customer_pdt_map
+        WHERE {filter_sql}
+    ),
+    cur AS (
+        SELECT COALESCE(SUM(sale_value), 0) AS sales, COUNT(DISTINCT outlet_code) AS outlets
+        FROM filtered WHERE invoice_date BETWEEN {cur_start} AND {cur_end}
+    ),
+    lm AS (
+        SELECT COALESCE(SUM(sale_value), 0) AS sales, COUNT(DISTINCT outlet_code) AS outlets
+        FROM filtered WHERE invoice_date BETWEEN {lm_start} AND {lm_end}
+    ),
+    lysm AS (
+        SELECT COALESCE(SUM(sale_value), 0) AS sales, COUNT(DISTINCT outlet_code) AS outlets
+        FROM filtered WHERE invoice_date BETWEEN {lysm_start} AND {lysm_end}
+    )
+    SELECT
+        c.sales, c.outlets,
+        CASE WHEN c.outlets > 0 THEN ROUND(c.sales / c.outlets, 2) ELSE NULL END AS throughput,
+        l.sales, l.outlets,
+        CASE WHEN l.outlets > 0 THEN ROUND(l.sales / l.outlets, 2) ELSE NULL END AS lm_throughput,
+        y.sales, y.outlets,
+        CASE WHEN y.outlets > 0 THEN ROUND(y.sales / y.outlets, 2) ELSE NULL END AS lysm_throughput
+    FROM cur c, lm l, lysm y
+    """
+
+    all_params = filter_params + date_params
+
+    con = get_duckdb_connection()
+    try:
+        row = con.execute(sql, all_params).fetchone()
+        if not row:
+            return {}
+
+        (
+            cur_sales, cur_outlets, cur_tp,
+            lm_sales,  lm_outlets,  lm_tp,
+            ly_sales,  ly_outlets,  ly_tp,
+        ) = row
+
+        def _pct_change(curr, prev):
+            if curr is None or prev is None or prev == 0:
+                return None
+            return round((curr - prev) / prev * 100, 1)
+
+        return {
+            "as_of": str(as_of),
+            "time": time,
+            "kpi": "Throughput",
+            "formula": "SUM(net_sale_value) / COUNT(DISTINCT outlet_code)",
+            "current": {
+                "secondary_sales": _mask_revenue(cur_sales),
+                "billed_outlets": cur_outlets,
+                "throughput_value": _mask_revenue(cur_tp),
+            },
+            "lm": {
+                "secondary_sales": _mask_revenue(lm_sales),
+                "billed_outlets": lm_outlets,
+                "throughput_value": _mask_revenue(lm_tp),
+            },
+            "lysm": {
+                "secondary_sales": _mask_revenue(ly_sales),
+                "billed_outlets": ly_outlets,
+                "throughput_value": _mask_revenue(ly_tp),
+            },
+            "vs_lm_pct": _pct_change(cur_tp, lm_tp),
+            "vs_lysm_pct": _pct_change(cur_tp, ly_tp),
+            "filters": {
+                "time": time,
+                "start_date": None if start_date is None else str(start_date),
+                "end_date": None if end_date is None else str(end_date),
+                "region": region,
+                "state": state,
+                "category": category,
+            },
+        }
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+@router.get("/primary-kpi/forecast-accuracy")
+async def forecast_accuracy(
+    time: Literal["MTD", "QTD", "YTD", "CUSTOM"] = "MTD",
+    as_of: Optional[date] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    state: Optional[str] = None,
+    category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
+        default=None
+    ),
+):
+    """
+    Forecast Accuracy % = (1 - ABS(forecast - actual) / actual) * 100
+    Actual  : SUM(vw_l_dms_invoice_data.net_sale_value)
+    Forecast: SUM(sotarget."Secondary Target") * 100000
+    Returns current period, LM, LYSM accuracy with delta.
+    """
+    as_of = as_of or date.today()
+
+    if time == "CUSTOM" and (start_date is None or end_date is None):
+        raise ValueError("For time=CUSTOM you must pass start_date and end_date")
+
+    if time == "MTD":
+        cur_start  = "date_trunc('month', CAST(? AS DATE))"
+        cur_end    = "CAST(? AS DATE)"
+        lm_start   = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end     = "date_trunc('month', CAST(? AS DATE)) - INTERVAL 1 DAY"
+        lysm_start = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 YEAR)"
+        lysm_end   = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 YEAR) + INTERVAL 1 MONTH - INTERVAL 1 DAY"
+        date_params: List[object] = [as_of, as_of, as_of, as_of, as_of, as_of]
+    elif time == "QTD":
+        cur_start  = "date_trunc('quarter', CAST(? AS DATE))"
+        cur_end    = "CAST(? AS DATE)"
+        lm_start   = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end     = "date_trunc('month', CAST(? AS DATE)) - INTERVAL 1 DAY"
+        lysm_start = "date_trunc('quarter', CAST(? AS DATE) - INTERVAL 1 YEAR)"
+        lysm_end   = "CAST(? AS DATE) - INTERVAL 1 YEAR"
+        date_params = [as_of, as_of, as_of, as_of, as_of, as_of]
+    elif time == "YTD":
+        cur_start  = "date_trunc('year', CAST(? AS DATE))"
+        cur_end    = "CAST(? AS DATE)"
+        lm_start   = "date_trunc('month', CAST(? AS DATE) - INTERVAL 1 MONTH)"
+        lm_end     = "date_trunc('month', CAST(? AS DATE)) - INTERVAL 1 DAY"
+        lysm_start = "date_trunc('year', CAST(? AS DATE) - INTERVAL 1 YEAR)"
+        lysm_end   = "CAST(? AS DATE) - INTERVAL 1 YEAR"
+        date_params = [as_of, as_of, as_of, as_of, as_of, as_of]
+    else:
+        cur_start  = "CAST(? AS DATE)"
+        cur_end    = "CAST(? AS DATE)"
+        lm_start   = "CAST(? AS DATE) - INTERVAL 1 MONTH"
+        lm_end     = "CAST(? AS DATE) - INTERVAL 1 MONTH"
+        lysm_start = "CAST(? AS DATE) - INTERVAL 1 YEAR"
+        lysm_end   = "CAST(? AS DATE) - INTERVAL 1 YEAR"
+        date_params = [start_date, end_date, start_date, end_date, start_date, end_date]
+
+    filter_clauses = ["1=1"]
+    filter_params: List[object] = []
+
+    if region:
+        filter_clauses.append("cm.customer_zone ILIKE ?")
+        filter_params.append(f"%{region}%")
+    if state:
+        filter_clauses.append("cm.customer_state = ?")
+        filter_params.append(state)
+    if category:
+        placeholders = ",".join(["?"] * len(category))
+        filter_clauses.append(f"d.sku_h3_name IN ({placeholders})")
+        filter_params.extend(category)
+
+    filter_sql = " AND ".join(filter_clauses)
+
+    sql = f"""
+    WITH
+    date_bounds AS (
+        SELECT
+            {cur_start}   AS cur_start,  {cur_end}    AS cur_end,
+            {lm_start}    AS lm_start,   {lm_end}     AS lm_end,
+            {lysm_start}  AS lysm_start, {lysm_end}   AS lysm_end
+    ),
+    base_actuals AS (
+        SELECT
+            CAST(d.invoice_date AS DATE)        AS invoice_date,
+            CAST(d.net_sale_value AS DOUBLE)    AS sale_value
+        FROM main.vw_l_dms_invoice_data d
+        LEFT JOIN main.customer_master cm
+            ON d.customer_pdt_map = cm.customer_pdt_map
+        WHERE {filter_sql}
+    ),
+    actuals_cur  AS (
+        SELECT COALESCE(SUM(sale_value), 0) AS v FROM base_actuals
+        WHERE invoice_date BETWEEN (SELECT cur_start  FROM date_bounds) AND (SELECT cur_end  FROM date_bounds)
+    ),
+    actuals_lm   AS (
+        SELECT COALESCE(SUM(sale_value), 0) AS v FROM base_actuals
+        WHERE invoice_date BETWEEN (SELECT lm_start   FROM date_bounds) AND (SELECT lm_end   FROM date_bounds)
+    ),
+    actuals_lysm AS (
+        SELECT COALESCE(SUM(sale_value), 0) AS v FROM base_actuals
+        WHERE invoice_date BETWEEN (SELECT lysm_start FROM date_bounds) AND (SELECT lysm_end FROM date_bounds)
+    ),
+    forecast_cur  AS (
+        SELECT COALESCE(SUM(CAST("Secondary Target" AS DOUBLE)) * 100000, 0) AS v
+        FROM main.sotarget
+        WHERE CAST("Date" AS DATE) BETWEEN (SELECT cur_start  FROM date_bounds) AND (SELECT cur_end  FROM date_bounds)
+    ),
+    forecast_lm   AS (
+        SELECT COALESCE(SUM(CAST("Secondary Target" AS DOUBLE)) * 100000, 0) AS v
+        FROM main.sotarget
+        WHERE CAST("Date" AS DATE) BETWEEN (SELECT lm_start   FROM date_bounds) AND (SELECT lm_end   FROM date_bounds)
+    ),
+    forecast_lysm AS (
+        SELECT COALESCE(SUM(CAST("Secondary Target" AS DOUBLE)) * 100000, 0) AS v
+        FROM main.sotarget
+        WHERE CAST("Date" AS DATE) BETWEEN (SELECT lysm_start FROM date_bounds) AND (SELECT lysm_end FROM date_bounds)
+    )
+    SELECT
+        ac.v  AS actual_cur,
+        fc.v  AS forecast_cur,
+        CASE WHEN ac.v > 0 THEN ROUND((1 - ABS(fc.v - ac.v) / ac.v) * 100, 1) ELSE NULL END AS accuracy_cur,
+        al.v  AS actual_lm,
+        fl.v  AS forecast_lm,
+        CASE WHEN al.v > 0 THEN ROUND((1 - ABS(fl.v - al.v) / al.v) * 100, 1) ELSE NULL END AS accuracy_lm,
+        ay.v  AS actual_lysm,
+        fy.v  AS forecast_lysm,
+        CASE WHEN ay.v > 0 THEN ROUND((1 - ABS(fy.v - ay.v) / ay.v) * 100, 1) ELSE NULL END AS accuracy_lysm
+    FROM actuals_cur ac, forecast_cur fc,
+         actuals_lm al,  forecast_lm fl,
+         actuals_lysm ay, forecast_lysm fy
+    """
+
+    all_params = filter_params + date_params
+
+    con = get_duckdb_connection()
+    try:
+        row = con.execute(sql, all_params).fetchone()
+        if not row:
+            return {}
+
+        (
+            actual_cur,  forecast_cur_v,  acc_cur,
+            actual_lm,   forecast_lm_v,   acc_lm,
+            actual_lysm, forecast_lysm_v, acc_lysm,
+        ) = row
+
+        def _pp(curr, prev):
+            if curr is None or prev is None:
+                return None
+            return round(curr - prev, 1)
+
+        return {
+            "as_of": str(as_of),
+            "time": time,
+            "kpi": "Forecast Accuracy %",
+            "formula": "(1 - ABS(forecast - actual) / actual) × 100",
+            "current": {
+                "actual_sales": _mask_revenue(actual_cur),
+                "forecast_sales": _mask_revenue(forecast_cur_v),
+                "forecast_accuracy_pct": acc_cur,
+            },
+            "lm": {
+                "actual_sales": _mask_revenue(actual_lm),
+                "forecast_sales": _mask_revenue(forecast_lm_v),
+                "forecast_accuracy_pct": acc_lm,
+            },
+            "lysm": {
+                "actual_sales": _mask_revenue(actual_lysm),
+                "forecast_sales": _mask_revenue(forecast_lysm_v),
+                "forecast_accuracy_pct": acc_lysm,
+            },
+            "vs_lm_pp": _pp(acc_cur, acc_lm),
+            "vs_lysm_pp": _pp(acc_cur, acc_lysm),
+            "filters": {
+                "time": time,
+                "start_date": None if start_date is None else str(start_date),
+                "end_date": None if end_date is None else str(end_date),
+                "region": region,
+                "state": state,
+                "category": category,
+            },
+        }
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
