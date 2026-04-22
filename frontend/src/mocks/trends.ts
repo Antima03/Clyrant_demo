@@ -1,18 +1,9 @@
-import type { TrendPoint, UoSPoint } from '@/types'
+import type { TrendPoint } from '@/types'
 
 /** Sec : Pri Ratio — 4M trend (spec § 5.3) */
 export const secPriMock: TrendPoint[] = [
-  { month: 'Sep', value: 71 },
-  { month: 'Oct', value: 74 },
-  { month: 'Nov', value: 77 },
-  { month: 'Dec', value: 78 },
-]
-
-/** Unique Outlets Scanned — 4M trend, two series (spec § 5.4).
- *  uos is total, uosMtd is the MTD-highlight series. Values in thousands. */
-export const uosMock: UoSPoint[] = [
-  { month: 'Sep', uos: 10.4, uosMtd: 7.2 },
-  { month: 'Oct', uos: 11.0, uosMtd: 8.1 },
-  { month: 'Nov', uos: 11.6, uosMtd: 8.9 },
-  { month: 'Dec', uos: 11.9, uosMtd: 9.3 },
+  { month: 'Sep', value: 71, priCr: 12.4, secCr: 8.8 },
+  { month: 'Oct', value: 74, priCr: 13.1, secCr: 9.7 },
+  { month: 'Nov', value: 77, priCr: 14.0, secCr: 10.8 },
+  { month: 'Dec', value: 78, priCr: 13.6, secCr: 10.6 },
 ]

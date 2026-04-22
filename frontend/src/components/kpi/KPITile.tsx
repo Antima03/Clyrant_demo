@@ -45,6 +45,12 @@ export function KPITile({ kpi, onClick }: Props) {
         {kpi.value}
       </span>
 
+      {kpi.subline && (
+        <span className="mt-0.5 text-3xs font-mono text-ink-3 truncate w-full leading-none">
+          {kpi.subline}
+        </span>
+      )}
+
       <div className="mt-1 flex items-center justify-between w-full gap-2">
         <div className="flex flex-col gap-0.5 min-w-0">
           {kpi.deltas.map((d, i) => {

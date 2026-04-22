@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query
 
 import os
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Literal, Optional
 
 from app.core.database import get_duckdb_connection
@@ -30,7 +30,7 @@ def net_sales(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None
@@ -63,8 +63,8 @@ def net_sales(
         params: List[object] = []
 
         if region:
-            where_clauses.append("region = ?")
-            params.append(region)
+            where_clauses.append("region ILIKE ?")
+            params.append(f"%{region}%")
         if state:
             where_clauses.append("state = ?")
             params.append(state)
@@ -217,13 +217,14 @@ def sales_vs_target(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None
     ),
 ):
     as_of = as_of or date.today()
+
 
     if time == "CUSTOM" and (start_date is None or end_date is None):
         raise ValueError("For time=CUSTOM you must pass start_date and end_date")
@@ -285,6 +286,10 @@ def sales_vs_target(
 
     sql = f"""
     WITH
+    ph_dedup AS (
+        SELECT DISTINCT sku_h1_code, sku_h3_name
+        FROM main.vw_l_product_hierarchy
+    ),
     actual AS (
         SELECT
             CAST(inv.invoice_date AS DATE)        AS invoice_date,
@@ -295,7 +300,7 @@ def sales_vs_target(
         FROM main.vw_l_dms_invoice_data inv
         LEFT JOIN main.customer_master cm
             ON inv.customer_pdt_map = cm.customer_pdt_map
-        LEFT JOIN main.vw_l_product_hierarchy p
+        LEFT JOIN ph_dedup p
             ON inv.masked_sku_h1_code = p.sku_h1_code
     ),
     targets AS (
@@ -318,7 +323,7 @@ def sales_vs_target(
         FROM filtered_actual
     ),
     period_target AS (
-        SELECT COALESCE(SUM(t.secondary_target), 0) AS target_sales
+        SELECT COALESCE(SUM(t.secondary_target), 0) * 1000 AS target_sales
         FROM targets t
         WHERE {target_filter_sql}
           AND {target_where}
@@ -373,7 +378,7 @@ def absolute_reach(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None
@@ -528,7 +533,7 @@ def primary_vs_secondary_gap(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None
@@ -659,7 +664,7 @@ def fill_rate(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None
@@ -796,7 +801,7 @@ def lines_per_call(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
 ):
     as_of = as_of or date.today()
@@ -920,7 +925,7 @@ def productivity(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
 ):
     as_of = as_of or date.today()
@@ -945,31 +950,41 @@ def productivity(
         end_expr   = "CAST(? AS DATE)"
         date_params = [start_date, end_date]
 
-    filter_clauses = ["1=1"]
-    filter_params: List[object] = []
+    assigned_clauses = ["1=1"]
+    assigned_params: List[object] = []
+    billed_clauses = ["1=1"]
+    billed_params: List[object] = []
 
     if region:
-        filter_clauses.append("e.rm_role ILIKE ?")
-        filter_params.append(f"%{region}%")
+        assigned_clauses.append("a.region ILIKE ?")
+        assigned_params.append(f"%{region}%")
+        billed_clauses.append("b.region ILIKE ?")
+        billed_params.append(f"%{region}%")
     if state:
-        filter_clauses.append("cm.customer_state = ?")
-        filter_params.append(state)
+        assigned_clauses.append("a.state ILIKE ?")
+        assigned_params.append(f"%{state}%")
+        billed_clauses.append("b.state ILIKE ?")
+        billed_params.append(f"%{state}%")
 
-    filter_sql = " AND ".join(filter_clauses)
+    assigned_filter = " AND ".join(assigned_clauses)
+    billed_filter = " AND ".join(billed_clauses)
 
     sql = f"""
     WITH
     assigned AS (
-        SELECT DISTINCT ord.outlet_code, ord.emp_h3_code, e.rm_role AS region
+        SELECT DISTINCT
+            ord.outlet_code,
+            e.rm_role    AS region,
+            cm.customer_state AS state
         FROM main.vw_l_secondary_visit_order_shifted_mapped_only ord
         LEFT JOIN main.vw_l_emp_hierarchy e ON ord.emp_h3_code = e.emp_h3_code
+        LEFT JOIN main.customer_master cm ON ord.customer_pdt_map = cm.customer_pdt_map
     ),
     billed_in_period AS (
         SELECT DISTINCT
             s.outlet_code,
-            CAST(s.invoice_date AS DATE) AS invoice_date,
-            cm.customer_zone             AS region,
-            cm.customer_state            AS state
+            cm.customer_zone  AS region,
+            cm.customer_state AS state
         FROM main.vw_l_dms_invoice_data s
         LEFT JOIN main.customer_master cm ON s.customer_pdt_map = cm.customer_pdt_map
         WHERE s.invoice_date BETWEEN {start_expr} AND {end_expr}
@@ -977,13 +992,12 @@ def productivity(
     total_assigned AS (
         SELECT COUNT(DISTINCT a.outlet_code) AS cnt
         FROM assigned a
-        LEFT JOIN main.vw_l_emp_hierarchy e ON a.emp_h3_code = e.emp_h3_code
-        WHERE {filter_sql}
+        WHERE {assigned_filter}
     ),
     total_billed AS (
         SELECT COUNT(DISTINCT b.outlet_code) AS cnt
         FROM billed_in_period b
-        WHERE {filter_sql.replace("e.rm_role", "b.region").replace("cm.customer_state", "b.state")}
+        WHERE {billed_filter}
     )
     SELECT
         ta.cnt AS assigned_outlets,
@@ -996,7 +1010,7 @@ def productivity(
     FROM total_assigned ta, total_billed tb
     """
 
-    all_params = date_params + filter_params + filter_params
+    all_params = date_params + assigned_params + billed_params
 
     con = get_duckdb_connection()
     try:
@@ -1074,7 +1088,7 @@ def primary_sales_by_product(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     division: Optional[str] = None,
 ):
@@ -1132,30 +1146,36 @@ def primary_sales_by_product(
 
     sql = f"""
     WITH
-    base AS (
+    ph_dedup AS (
+        SELECT DISTINCT sku_h3_name, sku_h4_name
+        FROM main.vw_l_product_hierarchy
+    ),
+    current_sales AS (
         SELECT
-            CAST(i.invoice_date AS DATE)        AS invoice_date,
-            CAST(i.gross_sale_value AS DOUBLE)  AS sales,
-            {group_col}                         AS dim
+            {group_col}                                      AS dim,
+            COALESCE(SUM(CAST(i.gross_sale_value AS DOUBLE)), 0) AS current_sales
         FROM main.vw_primary_invoice_data i
         LEFT JOIN main.customer_master cm
             ON i.customer_pdt_map = cm.customer_pdt_map
-        LEFT JOIN main.vw_l_product_hierarchy ph
+        LEFT JOIN ph_dedup ph
             ON i.sku_h3_name = ph.sku_h3_name
         WHERE {filter_sql}
-    ),
-    current_sales AS (
-        SELECT dim, COALESCE(SUM(sales), 0) AS current_sales
-        FROM base
-        WHERE invoice_date BETWEEN {cur_start} AND {cur_end}
-        GROUP BY dim
+          AND CAST(i.invoice_date AS DATE) BETWEEN {cur_start} AND {cur_end}
+        GROUP BY 1
     ),
     ly_sales AS (
-        SELECT dim, COALESCE(SUM(sales), 0) AS ly_value
-        FROM base
-        WHERE invoice_date BETWEEN ({cur_start}) - INTERVAL 1 YEAR
-                                AND ({cur_end})   - INTERVAL 1 YEAR
-        GROUP BY dim
+        SELECT
+            {group_col}                                      AS dim,
+            COALESCE(SUM(CAST(i.gross_sale_value AS DOUBLE)), 0) AS ly_value
+        FROM main.vw_primary_invoice_data i
+        LEFT JOIN main.customer_master cm
+            ON i.customer_pdt_map = cm.customer_pdt_map
+        LEFT JOIN ph_dedup ph
+            ON i.sku_h3_name = ph.sku_h3_name
+        WHERE {filter_sql}
+          AND CAST(i.invoice_date AS DATE) BETWEEN ({cur_start}) - INTERVAL 1 YEAR
+                                              AND ({cur_end})   - INTERVAL 1 YEAR
+        GROUP BY 1
     )
     SELECT
         c.dim,
@@ -1171,7 +1191,7 @@ def primary_sales_by_product(
     ORDER BY c.current_sales DESC
     """
 
-    all_params = filter_params + date_params
+    all_params = filter_params + date_params[:2] + filter_params + date_params[2:]
 
     con = get_duckdb_connection()
     try:
@@ -1214,12 +1234,13 @@ def primary_sales_drilldown(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     district: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None
     ),
+    top_n: int = 10,
 ):
     """
     4-level geo drill-down via customer_master (auto-detected):
@@ -1331,6 +1352,43 @@ def primary_sales_drilldown(
     con = get_duckdb_connection()
     try:
         rows = con.execute(sql, all_params).fetchall()
+
+        # Top-N + "Others" rollup to keep charts readable
+        if top_n and len(rows) > top_n:
+            top_rows = rows[:top_n]
+            rest = rows[top_n:]
+            others_sales = sum(r[1] for r in rest)
+            others_ly = sum(r[2] for r in rest)
+            others_goly = (
+                round((others_sales - others_ly) / others_ly * 100.0, 1)
+                if others_ly > 0 else None
+            )
+            data = [
+                {
+                    group_label: r[0],
+                    "primary_sales_value": _mask_revenue(r[1]),
+                    "primary_sales_ly_value": _mask_revenue(r[2]),
+                    "primary_sales_value_goly_pct": r[3],
+                }
+                for r in top_rows
+            ]
+            data.append({
+                group_label: f"Others ({len(rest)})",
+                "primary_sales_value": _mask_revenue(others_sales),
+                "primary_sales_ly_value": _mask_revenue(others_ly),
+                "primary_sales_value_goly_pct": others_goly,
+            })
+        else:
+            data = [
+                {
+                    group_label: r[0],
+                    "primary_sales_value": _mask_revenue(r[1]),
+                    "primary_sales_ly_value": _mask_revenue(r[2]),
+                    "primary_sales_value_goly_pct": r[3],
+                }
+                for r in rows
+            ]
+
         return {
             "as_of": str(as_of),
             "chart": "Primary Sales by Region",
@@ -1347,15 +1405,8 @@ def primary_sales_drilldown(
                 "district": district,
                 "category": category,
             },
-            "data": [
-                {
-                    group_label: r[0],
-                    "primary_sales_value": _mask_revenue(r[1]),
-                    "primary_sales_ly_value": _mask_revenue(r[2]),
-                    "primary_sales_value_goly_pct": r[3],
-                }
-                for r in rows
-            ],
+            "total_items": len(rows),
+            "data": data,
         }
     finally:
         try:
@@ -1582,7 +1633,7 @@ def outlet_funnel(
 def sec_vs_pri_ratio(
     months: int = 4,
     as_of: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None
@@ -1626,8 +1677,6 @@ def sec_vs_pri_ratio(
     pri_filter = " AND ".join(pri_clauses)
     sec_filter = " AND ".join(sec_clauses)
 
-    date_params: List[object] = [series_start, as_of, series_start, as_of]
-
     sql = f"""
     WITH
     primary_monthly AS (
@@ -1665,7 +1714,7 @@ def sec_vs_pri_ratio(
     ORDER BY p.month
     """
 
-    all_params = pri_params + sec_params + date_params
+    all_params = pri_params + [series_start, as_of] + sec_params + [series_start, as_of]
 
     con = get_duckdb_connection()
     try:
@@ -1713,9 +1762,14 @@ def sec_vs_pri_ratio(
 
 
 @router.get("/charts/outlet-billed-vs-ordered")
-async def outlet_billed_vs_ordered(
+def outlet_billed_vs_ordered(
     months: int = 4,
     as_of: Optional[date] = None,
+    region: Optional[str] = None,
+    state: Optional[str] = None,
+    category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
+        default=None
+    ),
 ):
     """
     Monthly line chart: Outlet Billed vs Outlet Order Taken.
@@ -1732,22 +1786,51 @@ async def outlet_billed_vs_ordered(
         y -= 1
     series_start = date(y, m, 1)
 
-    sql = """
+    billed_clauses = ["1=1"]
+    billed_params: List[object] = []
+    ordered_clauses = ["1=1"]
+    ordered_params: List[object] = []
+
+    if region:
+        billed_clauses.append("cm.customer_zone ILIKE ?")
+        billed_params.append(f"%{region}%")
+        ordered_clauses.append("cm2.customer_zone ILIKE ?")
+        ordered_params.append(f"%{region}%")
+    if state:
+        billed_clauses.append("cm.customer_state = ?")
+        billed_params.append(state)
+        ordered_clauses.append("cm2.customer_state = ?")
+        ordered_params.append(state)
+    if category:
+        placeholders = ",".join(["?"] * len(category))
+        billed_clauses.append(f"d.sku_h3_name IN ({placeholders})")
+        billed_params.extend(category)
+
+    billed_filter = " AND ".join(billed_clauses)
+    ordered_filter = " AND ".join(ordered_clauses)
+
+    sql = f"""
     WITH
     billed_monthly AS (
         SELECT
-            date_trunc('month', CAST(invoice_date AS DATE))  AS month,
-            COUNT(DISTINCT outlet_code)                      AS billed_outlets
-        FROM main.vw_l_dms_invoice_data
-        WHERE CAST(invoice_date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+            date_trunc('month', CAST(d.invoice_date AS DATE))  AS month,
+            COUNT(DISTINCT d.outlet_code)                      AS billed_outlets
+        FROM main.vw_l_dms_invoice_data d
+        LEFT JOIN main.customer_master cm
+            ON d.customer_pdt_map = cm.customer_pdt_map
+        WHERE {billed_filter}
+          AND CAST(d.invoice_date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
         GROUP BY 1
     ),
     ordered_monthly AS (
         SELECT
-            date_trunc('month', CAST(order_date AS DATE))    AS month,
-            COUNT(DISTINCT outlet_code)                      AS ordered_outlets
-        FROM main.vw_l_secondary_visit_order_shifted_mapped_only
-        WHERE CAST(order_date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+            date_trunc('month', CAST(o.order_date AS DATE))    AS month,
+            COUNT(DISTINCT o.outlet_code)                      AS ordered_outlets
+        FROM main.vw_l_secondary_visit_order_shifted_mapped_only o
+        LEFT JOIN main.customer_master cm2
+            ON o.customer_pdt_map = cm2.customer_pdt_map
+        WHERE {ordered_filter}
+          AND CAST(o.order_date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
         GROUP BY 1
     )
     SELECT
@@ -1761,11 +1844,11 @@ async def outlet_billed_vs_ordered(
     ORDER BY 1
     """
 
-    date_params: List[object] = [series_start, as_of, series_start, as_of]
+    all_params = billed_params + [series_start, as_of] + ordered_params + [series_start, as_of]
 
     con = get_duckdb_connection()
     try:
-        rows = con.execute(sql, date_params).fetchall()
+        rows = con.execute(sql, all_params).fetchall()
 
         series = [
             {
@@ -1816,7 +1899,7 @@ async def throughput(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None
@@ -1978,7 +2061,7 @@ async def forecast_accuracy(
     as_of: Optional[date] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    region: Optional[Literal["North", "South", "East", "West"]] = None,
+    region: Optional[str] = None,
     state: Optional[str] = None,
     category: Optional[List[Literal["Sanitary Napkins", "Diapers", "Utensil Cleaners"]]] = Query(
         default=None

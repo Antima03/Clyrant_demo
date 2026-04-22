@@ -51,6 +51,7 @@ export interface KPI {
   deltas: KPIDelta[]
   spark: number[] // 8–16 numeric points
   unit?: string
+  subline?: string // compact contextual second line (e.g. "Ord 143K → Bld 247K")
 }
 
 // ─── Primary Sales (dual-chart) ──────────────────────────────────────────
@@ -81,14 +82,17 @@ export interface FunnelStage {
 // ─── Sec : Pri Ratio trend ───────────────────────────────────────────────
 export interface TrendPoint {
   month: string
-  value: number // percent
+  value: number // ratio percent
+  priCr: number // primary sales in Cr
+  secCr: number // secondary sales in Cr
 }
 
-// ─── Unique Outlets Scanned (dual-series) ────────────────────────────────
-export interface UoSPoint {
+// ─── Outlet Billed vs Order Taken (dual-series) ─────────────────────────
+export interface OutletBilledPoint {
   month: string
-  uos: number // thousands of outlets
-  uosMtd: number
+  billed: number
+  ordered: number
+  gap: number
 }
 
 // ─── Drifts (Findings) ───────────────────────────────────────────────────

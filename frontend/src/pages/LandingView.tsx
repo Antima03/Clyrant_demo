@@ -3,7 +3,7 @@ import { KPIStrip } from '@/components/kpi/KPIStrip'
 import { PrimarySalesCard } from '@/components/charts/PrimarySalesCard'
 import { OutletFunnelCard } from '@/components/charts/OutletFunnelCard'
 import { SecPriRatioCard } from '@/components/charts/SecPriRatioCard'
-import { UniqueOutletsCard } from '@/components/charts/UniqueOutletsCard'
+import { OutletBilledCard } from '@/components/charts/OutletBilledCard'
 import { DriftPanel } from '@/components/drift/DriftPanel'
 import { FindingDetail } from '@/components/drift/FindingDetail'
 import { AskAIFab } from '@/components/ui/AskAIFab'
@@ -53,10 +53,9 @@ export function LandingView() {
 
   // Data — all wired through the service layer (mocks in dev, API in prod).
   const kpis = useAsync(() => landingService.kpis(filters), [filters])
-  const primary = useAsync(() => landingService.primarySales(filters), [filters])
   const funnel = useAsync(() => landingService.funnel(filters), [filters])
   const secPri = useAsync(() => landingService.secPri(filters), [filters])
-  const uos = useAsync(() => landingService.uos(filters), [filters])
+  const outletBilled = useAsync(() => landingService.outletBilled(filters), [filters])
   const drifts = useAsync(() => landingService.drifts(filters), [filters])
 
   // Reusable toast helper — every drift action routes through here until
@@ -138,11 +137,7 @@ export function LandingView() {
               <div className="h-full grid grid-rows-[1.05fr_1fr] gap-2.5">
                 {/* Top: Primary Sales full width */}
                 <div className="min-h-0">
-                  {primary.data ? (
-                    <PrimarySalesCard data={primary.data} />
-                  ) : (
-                    <Skeleton />
-                  )}
+                  <PrimarySalesCard filters={filters} />
                 </div>
 
                 {/* Bottom: Funnel | Sec:Pri | UoS */}
@@ -185,7 +180,7 @@ export function LandingView() {
                       mobileTab === 'drill' ? 'block' : 'hidden md:block',
                     )}
                   >
-                    {uos.data ? <UniqueOutletsCard data={uos.data} /> : <Skeleton />}
+                    {outletBilled.data ? <OutletBilledCard data={outletBilled.data} /> : <Skeleton />}
                   </div>
                 </div>
               </div>
